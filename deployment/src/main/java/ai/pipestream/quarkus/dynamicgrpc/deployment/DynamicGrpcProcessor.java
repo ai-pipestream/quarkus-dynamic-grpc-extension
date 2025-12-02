@@ -51,6 +51,8 @@ public class DynamicGrpcProcessor {
                         DynamicGrpcClientFactory.class,
                         ChannelManager.class,
                         ServiceDiscoveryManager.class,
+                        // Configuration
+                        ai.pipestream.quarkus.dynamicgrpc.config.DynamicGrpcTlsAdapter.class,
                         // Metrics
                         DynamicGrpcMetrics.class,
                         // Discovery components

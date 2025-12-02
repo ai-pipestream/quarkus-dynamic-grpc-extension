@@ -1,5 +1,7 @@
 package ai.pipestream.quarkus.dynamicgrpc;
 
+import ai.pipestream.quarkus.dynamicgrpc.config.DynamicGrpcConfig;
+import ai.pipestream.quarkus.dynamicgrpc.config.DynamicGrpcTlsAdapter;
 import ai.pipestream.quarkus.dynamicgrpc.exception.ChannelCreationException;
 import ai.pipestream.quarkus.dynamicgrpc.exception.ServiceNotFoundException;
 import ai.pipestream.quarkus.dynamicgrpc.metrics.DynamicGrpcMetrics;
@@ -10,6 +12,10 @@ import io.grpc.Channel;
 import io.grpc.ManagedChannel;
 import io.quarkus.grpc.runtime.stork.StorkGrpcChannel;
 import io.quarkus.grpc.runtime.config.GrpcClientConfiguration;
+import io.quarkus.grpc.runtime.supports.SSLConfigHelper;
+import io.vertx.core.http.HttpClientOptions;
+import io.vertx.core.net.PemKeyCertOptions;
+import io.vertx.core.net.PemTrustOptions;
 import io.vertx.grpc.client.GrpcClient;
 import io.vertx.grpc.client.GrpcClientOptions;
 import io.vertx.core.Vertx;
@@ -19,7 +25,6 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 import java.time.Duration;
@@ -58,14 +63,11 @@ public class ChannelManager {
     @Inject
     DynamicGrpcMetrics metrics;
 
-    @ConfigProperty(name = "quarkus.dynamic-grpc.channel.idle-ttl-minutes", defaultValue = "15")
-    long channelIdleTtlMinutes;
+    @Inject
+    DynamicGrpcConfig config;
 
-    @ConfigProperty(name = "quarkus.dynamic-grpc.channel.max-size", defaultValue = "1000")
-    long channelMaxSize;
-
-    @ConfigProperty(name = "quarkus.dynamic-grpc.channel.shutdown-timeout-seconds", defaultValue = "2")
-    long shutdownTimeoutSeconds;
+    @Inject
+    DynamicGrpcTlsAdapter tlsConfig;
 
     private Cache<String, Channel> channelCache;
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
@@ -77,14 +79,19 @@ public class ChannelManager {
     @PostConstruct
     void init() {
         this.channelCache = Caffeine.newBuilder()
-                .expireAfterAccess(Duration.ofMinutes(channelIdleTtlMinutes))
-                .maximumSize(channelMaxSize)
+                .expireAfterAccess(Duration.ofMinutes(config.channel().idleTtlMinutes()))
+                .maximumSize(config.channel().maxSize())
                 .removalListener(this::onChannelRemoved)
                 .recordStats()
                 .build();
 
         LOG.infof("Initialized ChannelManager with TTL=%d minutes, max size=%d",
-                channelIdleTtlMinutes, channelMaxSize);
+                config.channel().idleTtlMinutes(), config.channel().maxSize());
+
+        if (tlsConfig.enabled()) {
+            LOG.infof("TLS Configuration: enabled=true, trustAll=%s, verifyHostname=%s",
+                    tlsConfig.trustAll(), tlsConfig.verifyHostname());
+        }
 
         // Register active channel gauge
         metrics.registerActiveChannelGauge(this::getActiveServiceCount);
@@ -194,7 +201,36 @@ public class ChannelManager {
         metrics.recordCacheMiss(serviceName);
 
         try {
-            GrpcClientOptions clientOptions = new GrpcClientOptions();
+            // Create HTTP client options for TLS configuration (Quarkus pattern)
+            HttpClientOptions httpOptions = new HttpClientOptions();
+            httpOptions.setHttp2ClearTextUpgrade(false); // Recommended by Quarkus
+
+            // Configure TLS if enabled (using Quarkus's SSLConfigHelper - 1:1 with Quarkus code)
+            if (tlsConfig.enabled()) {
+                LOG.debugf("Configuring TLS for service: %s", serviceName);
+                httpOptions.setSsl(true);
+                httpOptions.setUseAlpn(true);
+                httpOptions.setTrustAll(tlsConfig.trustAll());
+
+                // Apply Quarkus TLS configuration using their helper methods
+                SSLConfigHelper.configurePemTrustOptions(httpOptions, tlsConfig.trustCertificatePem());
+                SSLConfigHelper.configureJksTrustOptions(httpOptions, tlsConfig.trustCertificateJks());
+                SSLConfigHelper.configurePfxTrustOptions(httpOptions, tlsConfig.trustCertificateP12());
+
+                SSLConfigHelper.configurePemKeyCertOptions(httpOptions, tlsConfig.keyCertificatePem());
+                SSLConfigHelper.configureJksKeyCertOptions(httpOptions, tlsConfig.keyCertificateJks());
+                SSLConfigHelper.configurePfxKeyCertOptions(httpOptions, tlsConfig.keyCertificateP12());
+
+                httpOptions.setVerifyHost(tlsConfig.verifyHostname());
+
+                LOG.infof("TLS configured for service %s: trustAll=%s, verifyHostname=%s",
+                        serviceName, tlsConfig.trustAll(), tlsConfig.verifyHostname());
+            }
+
+            // Create gRPC client options with HTTP options
+            GrpcClientOptions clientOptions = new GrpcClientOptions()
+                    .setTransportOptions(httpOptions);
+
             GrpcClient grpcClient = GrpcClient.client(vertx, clientOptions);
 
             Channel created = getChannel(serviceName, grpcClient);
@@ -338,7 +374,7 @@ public class ChannelManager {
                         }
                     }
                 }
-            }).get(shutdownTimeoutSeconds, TimeUnit.SECONDS);
+            }).get(config.channel().shutdownTimeoutSeconds(), TimeUnit.SECONDS);
         } catch (TimeoutException e) {
             LOG.warn("Channel shutdown timed out, forcing immediate termination");
             channels.forEach(ch -> {
