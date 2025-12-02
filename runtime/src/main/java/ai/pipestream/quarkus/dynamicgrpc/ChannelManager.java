@@ -1,5 +1,8 @@
 package ai.pipestream.quarkus.dynamicgrpc;
 
+import ai.pipestream.quarkus.dynamicgrpc.exception.ChannelCreationException;
+import ai.pipestream.quarkus.dynamicgrpc.exception.ServiceNotFoundException;
+import ai.pipestream.quarkus.dynamicgrpc.metrics.DynamicGrpcMetrics;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
@@ -52,6 +55,9 @@ public class ChannelManager {
     @Inject
     Executor executor;
 
+    @Inject
+    DynamicGrpcMetrics metrics;
+
     @ConfigProperty(name = "quarkus.dynamic-grpc.channel.idle-ttl-minutes", defaultValue = "15")
     long channelIdleTtlMinutes;
 
@@ -79,6 +85,9 @@ public class ChannelManager {
 
         LOG.infof("Initialized ChannelManager with TTL=%d minutes, max size=%d",
                 channelIdleTtlMinutes, channelMaxSize);
+
+        // Register active channel gauge
+        metrics.registerActiveChannelGauge(this::getActiveServiceCount);
     }
 
     /**
@@ -91,6 +100,16 @@ public class ChannelManager {
     private void onChannelRemoved(String serviceName, Channel channel, RemovalCause cause) {
         if (channel == null) return;
 
+        // Record metrics for eviction
+        String evictionReason = switch (cause) {
+            case EXPIRED -> "ttl_expired";
+            case SIZE -> "size_limit";
+            case EXPLICIT -> "manual";
+            case REPLACED -> "replaced";
+            default -> "other";
+        };
+        metrics.recordChannelEvicted(serviceName, evictionReason);
+
         if (shuttingDown.get()) {
             LOG.debugf("Application shutting down, initiating non-blocking channel shutdown for service '%s'", serviceName);
             try {
@@ -100,7 +119,7 @@ public class ChannelManager {
                     ((StorkGrpcChannel) channel).close();
                 }
             } catch (Exception e) {
-                LOG.debugf("Error during shutdown of channel for service %s: %s", serviceName, e.getMessage());
+                LOG.tracef("Error during shutdown of channel for service %s: %s", serviceName, e.getMessage());
             }
             return;
         }
@@ -144,17 +163,20 @@ public class ChannelManager {
      * @param serviceName the logical service name used for discovery and caching
      * @param instances   the list of discovered service instances (must be non-empty)
      * @return a Uni that emits the Channel when ready
+     * @throws ServiceNotFoundException if no instances are found for the service
+     * @throws ChannelCreationException if channel creation fails
      */
     public Uni<Channel> getOrCreateChannel(String serviceName, List<ServiceInstance> instances) {
         if (instances == null || instances.isEmpty()) {
-            return Uni.createFrom().failure(new io.grpc.StatusRuntimeException(
-                    io.grpc.Status.UNAVAILABLE.withDescription("No instances found for service " + serviceName)
-            ));
+            return Uni.createFrom().failure(
+                    new ServiceNotFoundException(serviceName, "No service instances available")
+            );
         }
 
         if (shuttingDown.get()) {
-            return Uni.createFrom().failure(new io.grpc.StatusRuntimeException(
-                    io.grpc.Status.UNAVAILABLE.withDescription("Channel manager is shutting down")));
+            return Uni.createFrom().failure(
+                    new ChannelCreationException(serviceName, "Channel manager is shutting down")
+            );
         }
 
         if (channelCache == null) {
@@ -164,14 +186,38 @@ public class ChannelManager {
         Channel existing = channelCache.getIfPresent(serviceName);
         if (existing != null) {
             LOG.debugf("Reusing existing gRPC channel for service: %s", serviceName);
+            metrics.recordCacheHit(serviceName);
             return Uni.createFrom().item(existing);
         }
 
         LOG.infof("Creating new Stork gRPC channel for service: %s", serviceName);
+        metrics.recordCacheMiss(serviceName);
 
-        GrpcClientOptions clientOptions = new GrpcClientOptions();
-        GrpcClient grpcClient = GrpcClient.client(vertx, clientOptions);
+        try {
+            GrpcClientOptions clientOptions = new GrpcClientOptions();
+            GrpcClient grpcClient = GrpcClient.client(vertx, clientOptions);
 
+            Channel created = getChannel(serviceName, grpcClient);
+            LOG.debugf("Created StorkGrpcChannel for %s", serviceName);
+            channelCache.put(serviceName, created);
+
+            // Record successful channel creation
+            metrics.recordChannelCreated(serviceName);
+
+            return Uni.createFrom().item(created);
+        } catch (Exception e) {
+            LOG.errorf(e, "Failed to create gRPC channel for service: %s", serviceName);
+
+            // Record exception
+            metrics.recordException(e.getClass().getSimpleName(), serviceName, "channel_creation");
+
+            return Uni.createFrom().failure(
+                    new ChannelCreationException(serviceName, "Channel creation failed", e)
+            );
+        }
+    }
+
+    private Channel getChannel(String serviceName, GrpcClient grpcClient) {
         GrpcClientConfiguration.StorkConfig storkConfig = new GrpcClientConfiguration.StorkConfig() {
             @Override
             public int threads() {
@@ -200,9 +246,7 @@ public class ChannelManager {
         };
 
         Channel created = new StorkGrpcChannel(grpcClient, serviceName, storkConfig, executor);
-        LOG.debugf("Created StorkGrpcChannel for %s", serviceName);
-        channelCache.put(serviceName, created);
-        return Uni.createFrom().item(created);
+        return created;
     }
 
     /**
@@ -222,6 +266,15 @@ public class ChannelManager {
      */
     public String getCacheStats() {
         var stats = channelCache.stats();
+
+        // Update metrics with current cache stats
+        metrics.updateCacheStats(
+                stats.hitCount(),
+                stats.missCount(),
+                stats.evictionCount(),
+                channelCache.estimatedSize()
+        );
+
         return String.format("Cache stats - Size: %d, Hits: %d, Misses: %d, Hit rate: %.2f%%, Evictions: %d",
                 channelCache.estimatedSize(),
                 stats.hitCount(),
@@ -275,13 +328,13 @@ public class ChannelManager {
                             ((StorkGrpcChannel) channel).close();
                         }
                     } catch (Exception e) {
-                        LOG.debugf("Error during channel shutdown: %s", e.getMessage());
+                        LOG.tracef(e, "Error during channel shutdown, forcing immediate termination");
                         try {
                             if (channel instanceof ManagedChannel) {
                                 ((ManagedChannel) channel).shutdownNow();
                             }
                         } catch (Exception ex) {
-                            // Ignore
+                            LOG.tracef(ex, "Error forcing shutdown during cleanup - ignoring");
                         }
                     }
                 }
@@ -296,7 +349,7 @@ public class ChannelManager {
                         ((StorkGrpcChannel) ch).close();
                     }
                 } catch (Exception ex) {
-                    // Ignore
+                    LOG.tracef(ex, "Error during forced channel shutdown on timeout - ignoring");
                 }
             });
         } catch (Exception e) {

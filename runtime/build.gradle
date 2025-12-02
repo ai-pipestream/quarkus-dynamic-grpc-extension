@@ -19,6 +19,9 @@ dependencies {
     implementation 'io.quarkus:quarkus-vertx'
     implementation 'io.quarkus:quarkus-smallrye-stork'
 
+    // Metrics
+    implementation 'io.quarkus:quarkus-micrometer'
+
     // Stork Consul discovery (version managed by Quarkus BOM)
     implementation 'io.smallrye.stork:stork-service-discovery-consul'
 

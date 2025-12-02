@@ -3,6 +3,7 @@ package ai.pipestream.quarkus.dynamicgrpc;
 import ai.pipestream.quarkus.dynamicgrpc.GrpcClientFactory;
 import ai.pipestream.quarkus.dynamicgrpc.base.ConsulServiceRegistration;
 import ai.pipestream.quarkus.dynamicgrpc.base.ConsulTestResource;
+import ai.pipestream.quarkus.dynamicgrpc.exception.InvalidServiceNameException;
 import ai.pipestream.quarkus.dynamicgrpc.it.proto.MutinyGreeterGrpc;
 import io.quarkus.test.common.WithTestResource;
 import io.quarkus.test.junit.QuarkusTest;
@@ -52,32 +53,35 @@ public class DynamicGrpcEdgeCasesTest {
     }
 
     @Test
-    @DisplayName("Null service name should throw IllegalArgumentException")
+    @DisplayName("Null service name should throw InvalidServiceNameException")
     void testNullServiceName() {
         assertThatThrownBy(() ->
             clientFactory.getChannel(null)
                 .await().atMost(Duration.ofSeconds(1))
-        ).isInstanceOf(IllegalArgumentException.class)
+        ).isInstanceOf(InvalidServiceNameException.class)
+         .isInstanceOf(IllegalArgumentException.class)  // Verify it extends IllegalArgumentException
          .hasMessageContaining("null");
     }
 
     @Test
-    @DisplayName("Empty service name should throw IllegalArgumentException")
+    @DisplayName("Empty service name should throw InvalidServiceNameException")
     void testEmptyServiceName() {
         assertThatThrownBy(() ->
             clientFactory.getChannel("")
                 .await().atMost(Duration.ofSeconds(1))
-        ).isInstanceOf(IllegalArgumentException.class)
+        ).isInstanceOf(InvalidServiceNameException.class)
+         .isInstanceOf(IllegalArgumentException.class)  // Verify it extends IllegalArgumentException
          .hasMessageContaining("blank");
     }
 
     @Test
-    @DisplayName("Blank service name should throw IllegalArgumentException")
+    @DisplayName("Blank service name should throw InvalidServiceNameException")
     void testBlankServiceName() {
         assertThatThrownBy(() ->
             clientFactory.getChannel("   ")
                 .await().atMost(Duration.ofSeconds(1))
-        ).isInstanceOf(IllegalArgumentException.class)
+        ).isInstanceOf(InvalidServiceNameException.class)
+         .isInstanceOf(IllegalArgumentException.class)  // Verify it extends IllegalArgumentException
          .hasMessageContaining("blank");
     }
 

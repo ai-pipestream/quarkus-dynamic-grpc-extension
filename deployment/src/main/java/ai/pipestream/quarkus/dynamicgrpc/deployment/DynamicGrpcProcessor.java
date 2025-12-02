@@ -11,6 +11,7 @@ import ai.pipestream.quarkus.dynamicgrpc.discovery.ServiceDiscoveryImpl;
 import ai.pipestream.quarkus.dynamicgrpc.discovery.ServiceDiscoveryProducer;
 import ai.pipestream.quarkus.dynamicgrpc.discovery.StandaloneServiceDiscoveryProducer;
 import ai.pipestream.quarkus.dynamicgrpc.discovery.StandaloneVertxProducer;
+import ai.pipestream.quarkus.dynamicgrpc.metrics.DynamicGrpcMetrics;
 import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
@@ -50,6 +51,8 @@ public class DynamicGrpcProcessor {
                         DynamicGrpcClientFactory.class,
                         ChannelManager.class,
                         ServiceDiscoveryManager.class,
+                        // Metrics
+                        DynamicGrpcMetrics.class,
                         // Discovery components
                         ServiceDiscovery.class,
                         ServiceDiscoveryImpl.class,

@@ -1,5 +1,9 @@
 package ai.pipestream.quarkus.dynamicgrpc;
 
+import ai.pipestream.quarkus.dynamicgrpc.exception.DynamicGrpcException;
+import ai.pipestream.quarkus.dynamicgrpc.exception.InvalidServiceNameException;
+import ai.pipestream.quarkus.dynamicgrpc.exception.ServiceNotFoundException;
+import ai.pipestream.quarkus.dynamicgrpc.metrics.DynamicGrpcMetrics;
 import io.grpc.*;
 import io.quarkus.grpc.MutinyStub;
 import io.smallrye.mutiny.Uni;
@@ -39,14 +43,41 @@ public class DynamicGrpcClientFactory implements GrpcClientFactory {
     @Inject
     ChannelManager channelManager;
 
+    @Inject
+    DynamicGrpcMetrics metrics;
+
     /**
      * {@inheritDoc}
      */
     @Override
     public <T extends MutinyStub> Uni<T> getClient(String serviceName, Function<Channel, T> stubCreator) {
-        validateServiceName(serviceName);
-        //noinspection FunctionalExpressionCanBeFolded
-        return getChannel(serviceName).map(stubCreator::apply);
+        if (stubCreator == null) {
+            return Uni.createFrom().failure(
+                    new DynamicGrpcException("Stub creator function must not be null")
+            );
+        }
+
+        return getChannel(serviceName)
+                .map(channel -> {
+                    try {
+                        T stub = stubCreator.apply(channel);
+                        // Record successful client creation
+                        metrics.recordClientCreationSuccess(serviceName);
+                        return stub;
+                    } catch (Exception e) {
+                        LOG.errorf(e, "Failed to create stub for service: %s", serviceName);
+                        // Record exception
+                        metrics.recordException(e.getClass().getSimpleName(), serviceName, "stub_creation");
+                        metrics.recordClientCreationFailure(serviceName, e.getClass().getSimpleName());
+                        throw new DynamicGrpcException("Failed to create gRPC stub for service: " + serviceName, e);
+                    }
+                })
+                .onFailure().invoke(throwable -> {
+                    // Record failed client creation if channel retrieval failed
+                    if (!(throwable instanceof DynamicGrpcException)) {
+                        metrics.recordClientCreationFailure(serviceName, throwable.getClass().getSimpleName());
+                    }
+                });
     }
 
     /**
@@ -54,9 +85,19 @@ public class DynamicGrpcClientFactory implements GrpcClientFactory {
      */
     @Override
     public Uni<Channel> getChannel(String serviceName) {
-        if (serviceName == null || serviceName.isBlank()) {
-            return Uni.createFrom().failure(new IllegalArgumentException("Service name must not be null or blank"));
+        // Validate service name
+        if (serviceName == null) {
+            InvalidServiceNameException ex = new InvalidServiceNameException(null, "Service name must not be null");
+            metrics.recordException(ex.getClass().getSimpleName(), null, "validation");
+            return Uni.createFrom().failure(ex);
         }
+        if (serviceName.isBlank()) {
+            InvalidServiceNameException ex = new InvalidServiceNameException(serviceName, "Service name must not be blank");
+            metrics.recordException(ex.getClass().getSimpleName(), serviceName, "validation");
+            return Uni.createFrom().failure(ex);
+        }
+
+        LOG.debugf("Getting channel for service: %s", serviceName);
 
         return serviceDiscoveryManager.ensureServiceDefined(serviceName)
                 .chain(ignored -> {
@@ -67,12 +108,6 @@ public class DynamicGrpcClientFactory implements GrpcClientFactory {
                     LOG.debugf("Step 2: Got %d instances for %s", instances.size(), serviceName);
                     return channelManager.getOrCreateChannel(serviceName, instances);
                 });
-    }
-
-    private void validateServiceName(String serviceName) {
-        if (serviceName == null || serviceName.isBlank()) {
-            throw new IllegalArgumentException("Service name must not be null or blank");
-        }
     }
 
     /**

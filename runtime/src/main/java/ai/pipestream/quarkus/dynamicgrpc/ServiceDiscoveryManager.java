@@ -1,5 +1,8 @@
 package ai.pipestream.quarkus.dynamicgrpc;
 
+import ai.pipestream.quarkus.dynamicgrpc.exception.ServiceDiscoveryException;
+import ai.pipestream.quarkus.dynamicgrpc.exception.ServiceNotFoundException;
+import ai.pipestream.quarkus.dynamicgrpc.metrics.DynamicGrpcMetrics;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.stork.Stork;
 import io.smallrye.stork.api.Service;
@@ -38,6 +41,9 @@ public class ServiceDiscoveryManager {
     }
 
     private static final Logger LOG = Logger.getLogger(ServiceDiscoveryManager.class);
+
+    @Inject
+    DynamicGrpcMetrics metrics;
 
     /**
      * Consul agent host used for service discovery.
@@ -85,6 +91,7 @@ public class ServiceDiscoveryManager {
      * @param storkServiceName the logical service name as it will be known to Stork
      * @param consulApplicationName the Consul service name to query for instances when no override is provided
      * @return a Uni that completes when the service is defined or already present; fails if definition cannot be registered
+     * @throws ServiceDiscoveryException if the service definition fails
      */
     public Uni<Void> ensureServiceDefinedFor(String storkServiceName, String consulApplicationName) {
         Optional<Service> existingService = Stork.getInstance().getServiceOptional(storkServiceName);
@@ -120,7 +127,10 @@ public class ServiceDiscoveryManager {
             return Uni.createFrom().voidItem();
         } catch (Exception e) {
             LOG.errorf(e, "Failed to define Stork service: %s", storkServiceName);
-            return Uni.createFrom().failure(e);
+            metrics.recordException(e.getClass().getSimpleName(), storkServiceName, "service_definition");
+            return Uni.createFrom().failure(
+                    new ServiceDiscoveryException(storkServiceName, "Failed to define service in Stork", e)
+            );
         }
     }
 
@@ -129,14 +139,51 @@ public class ServiceDiscoveryManager {
      *
      * @param serviceName the service name to look up (must have been defined in Stork)
      * @return a Uni emitting the list of service instances; fails if the service is unknown or an error occurs
+     * @throws ServiceNotFoundException if the service is not found
+     * @throws ServiceDiscoveryException if service discovery fails
      */
     public Uni<List<ServiceInstance>> getServiceInstances(String serviceName) {
         try {
             Service service = Stork.getInstance().getService(serviceName);
-            return service.getInstances();
+            if (service == null) {
+                metrics.recordServiceDiscovery(serviceName, false, 0);
+                metrics.recordException(ServiceNotFoundException.class.getSimpleName(), serviceName, "discovery");
+                return Uni.createFrom().failure(
+                        new ServiceNotFoundException(serviceName)
+                );
+            }
+            return service.getInstances()
+                    .onItem().transform(instances -> {
+                        if (instances.isEmpty()) {
+                            LOG.warnf("No instances found for service: %s", serviceName);
+                            metrics.recordServiceDiscovery(serviceName, true, 0);
+                        } else {
+                            LOG.debugf("Found %d instances for service: %s", instances.size(), serviceName);
+                            metrics.recordServiceDiscovery(serviceName, true, instances.size());
+                        }
+                        return instances;
+                    })
+                    .onFailure().transform(e -> {
+                        LOG.errorf(e, "Failed to discover instances for service: %s", serviceName);
+                        metrics.recordServiceDiscovery(serviceName, false, 0);
+                        metrics.recordException(e.getClass().getSimpleName(), serviceName, "discovery");
+                        return new ServiceDiscoveryException(serviceName, "Failed to retrieve service instances", e);
+                    });
+        } catch (IllegalStateException e) {
+            // Service not registered in Stork
+            LOG.errorf(e, "Service not found in Stork: %s", serviceName);
+            metrics.recordServiceDiscovery(serviceName, false, 0);
+            metrics.recordException(ServiceNotFoundException.class.getSimpleName(), serviceName, "discovery");
+            return Uni.createFrom().failure(
+                    new ServiceNotFoundException(serviceName, e)
+            );
         } catch (Exception e) {
-            LOG.errorf(e, "Failed to get service instances for %s", serviceName);
-            return Uni.createFrom().failure(e);
+            LOG.errorf(e, "Unexpected error getting service instances for %s", serviceName);
+            metrics.recordServiceDiscovery(serviceName, false, 0);
+            metrics.recordException(e.getClass().getSimpleName(), serviceName, "discovery");
+            return Uni.createFrom().failure(
+                    new ServiceDiscoveryException(serviceName, "Unexpected discovery error", e)
+            );
         }
     }
 }
