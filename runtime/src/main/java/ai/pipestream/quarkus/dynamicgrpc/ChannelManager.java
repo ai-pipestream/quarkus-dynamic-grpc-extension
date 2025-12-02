@@ -97,8 +97,7 @@ public class ChannelManager {
         LOG.infof("Evicting gRPC channel for service '%s' due to: %s", serviceName, cause);
 
         try {
-            if (channel instanceof ManagedChannel) {
-                ManagedChannel mc = (ManagedChannel) channel;
+            if (channel instanceof ManagedChannel mc) {
                 mc.shutdown();
                 if (!mc.awaitTermination(500, TimeUnit.MILLISECONDS)) {
                     LOG.warnf("Channel for service %s did not terminate gracefully, forcing shutdown", serviceName);
@@ -112,9 +111,7 @@ public class ChannelManager {
             Thread.currentThread().interrupt();
             LOG.errorf("Interrupted while shutting down channel for service %s", serviceName);
             try {
-                if (channel instanceof ManagedChannel) {
-                    ((ManagedChannel) channel).shutdownNow();
-                }
+                ((ManagedChannel) channel).shutdownNow();
             } catch (Exception ex) {
                 LOG.errorf(ex, "Error forcing shutdown of channel for service %s", serviceName);
             }
@@ -252,8 +249,7 @@ public class ChannelManager {
             shutdownExecutor.submit(() -> {
                 for (Channel channel : channels) {
                     try {
-                        if (channel instanceof ManagedChannel) {
-                            ManagedChannel mc = (ManagedChannel) channel;
+                        if (channel instanceof ManagedChannel mc) {
                             if (!mc.isShutdown()) {
                                 mc.shutdown();
                                 if (!mc.awaitTermination(100, TimeUnit.MILLISECONDS)) {
@@ -279,8 +275,7 @@ public class ChannelManager {
             LOG.warn("Channel shutdown timed out, forcing immediate termination");
             channels.forEach(ch -> {
                 try {
-                    if (ch instanceof ManagedChannel) {
-                        ManagedChannel mc = (ManagedChannel) ch;
+                    if (ch instanceof ManagedChannel mc) {
                         if (!mc.isShutdown()) mc.shutdownNow();
                     } else if (ch instanceof StorkGrpcChannel) {
                         ((StorkGrpcChannel) ch).close();

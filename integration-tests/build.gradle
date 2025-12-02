@@ -9,6 +9,9 @@ dependencies {
     // Quarkus BOM
     implementation platform("io.quarkus:quarkus-bom:${quarkusVersion}")
 
+    // Force TestContainers version - override Quarkus BOM
+    testImplementation(platform('org.testcontainers:testcontainers-bom:2.0.2'))
+
     // Our extension
     implementation project(':runtime')
 
@@ -21,17 +24,29 @@ dependencies {
     testImplementation 'io.quarkus:quarkus-junit5'
     testImplementation 'io.rest-assured:rest-assured'
     testImplementation 'org.awaitility:awaitility'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
 
-    // TestContainers for Consul
-    testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
-    testImplementation "org.testcontainers:consul:${testcontainersVersion}"
-    testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+    // TestContainers for Consul - real integration tests, no mocks
+    testImplementation 'org.testcontainers:testcontainers'
+    testImplementation 'org.testcontainers:testcontainers-consul'  // Note: renamed from 'consul' in 2.x
+    testImplementation 'org.testcontainers:junit-jupiter'
+
+    // Consul client for service registration in tests
+    testImplementation 'com.ecwid.consul:consul-api:1.4.5'
 
     // Our deployment module provides build-time setup
     testImplementation project(':deployment')
 
     // JUnit Platform launcher for Gradle 9
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs += 'build/classes/java/quarkus-generated-sources/grpc'
+        }
+    }
 }
 
 java {

@@ -30,7 +30,7 @@ public class RandomLoadBalancer implements LoadBalancer {
                 (List<ServiceInstance>) instances : new java.util.ArrayList<>(instances);
 
         if (instanceList.size() == 1) {
-            return instanceList.get(0);
+            return instanceList.getFirst();
         }
 
         int index = random.nextInt(instanceList.size());

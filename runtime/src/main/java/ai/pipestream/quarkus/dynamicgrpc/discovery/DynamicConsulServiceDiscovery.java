@@ -134,7 +134,6 @@ public class DynamicConsulServiceDiscovery implements ServiceDiscovery {
                 });
     }
 
-    @SuppressWarnings("unchecked")
     private Uni<List<ServiceEntry>> findHealthyInstances(String serviceName) {
         if (consulClient == null) {
             throw new ServiceDiscoveryException("ConsulClient not initialized. Check configuration.");

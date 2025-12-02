@@ -1,0 +1,65 @@
+package ai.pipestream.quarkus.dynamicgrpc.base;
+
+import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
+import org.testcontainers.consul.ConsulContainer;
+import org.testcontainers.utility.DockerImageName;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * TestContainers resource for Consul - provides real Consul instance for integration tests.
+ * Uses random ports to avoid conflicts.
+ */
+public class ConsulTestResource implements QuarkusTestResourceLifecycleManager {
+
+    private static final DockerImageName CONSUL_IMAGE = DockerImageName.parse("consul:1.15");
+    private static ConsulContainer consulContainer;
+
+    @Override
+    public Map<String, String> start() {
+        // Start Consul container with random mapped port
+        consulContainer = new ConsulContainer(CONSUL_IMAGE)
+            .withConsulCommand("agent -dev -ui -client=0.0.0.0 -log-level=INFO");
+
+        consulContainer.start();
+
+        // Get the mapped port (random host port)
+        int consulPort = consulContainer.getMappedPort(8500);
+        String consulHost = consulContainer.getHost();
+
+        Map<String, String> config = new HashMap<>();
+        config.put("quarkus.dynamic-grpc.consul.host", consulHost);
+        config.put("quarkus.dynamic-grpc.consul.port", String.valueOf(consulPort));
+        config.put("quarkus.dynamic-grpc.consul.refresh-period", "2s");
+        config.put("quarkus.dynamic-grpc.consul.use-health-checks", "false");
+
+        System.out.println("Consul container started at " + consulHost + ":" + consulPort);
+
+        return config;
+    }
+
+    @Override
+    public void stop() {
+        if (consulContainer != null) {
+            consulContainer.stop();
+        }
+    }
+
+    /**
+     * Get the Consul container instance for registering services in tests.
+     */
+    public static ConsulContainer getConsulContainer() {
+        return consulContainer;
+    }
+
+    /**
+     * Get Consul HTTP endpoint for direct API calls.
+     */
+    public static String getConsulHttpEndpoint() {
+        if (consulContainer != null) {
+            return "http://" + consulContainer.getHost() + ":" + consulContainer.getMappedPort(8500);
+        }
+        return null;
+    }
+}
